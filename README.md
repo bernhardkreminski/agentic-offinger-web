@@ -13,6 +13,10 @@ Funktionsgleich mit der iPad-App:
   `data/testfile.btlx` wird beim Laden der Seite automatisch geöffnet.
 - **3D-Ansicht** — Orbit/Pan/Zoom, Standardansichten (Iso, Ansicht, Rückseite,
   Draufsicht, Seitlich), Kantendarstellung, Einpassen.
+- **Ansicht als echte 2D-Ansicht** — die Ansicht wird in Parallelprojektion gezeichnet
+  (orthografische Kamera): keine Perspektive, keine sichtbare Tiefe, parallele Kanten
+  bleiben parallel. Sie lässt sich verschieben und zoomen, aber nicht aus der Ebene
+  herausdrehen. Alle übrigen Ansichten bleiben perspektivisch.
 - **Schichten** — aus der Bauteillage entlang der Elementnormale abgeleitet:
   `RW` (Rahmenwerk), `BS1…` (Beplankung Seite 1 …), `IS1…` (Innenseite …).
   Mehrere Schichten gleichzeitig sichtbar, einzeln isolierbar, ausgeblendete Schichten

@@ -17,7 +17,8 @@ const UNIT_SCALE = 0.001;
 /** Standard shop-drawing viewpoints. Direction is in scene space (Y up, model centred). */
 export const VIEW_PRESETS = {
   iso: { label: 'Iso', direction: new THREE.Vector3(-0.75, 0.55, -1).normalize(), up: new THREE.Vector3(0, 1, 0) },
-  front: { label: 'Ansicht', direction: new THREE.Vector3(0, 0, -1), up: new THREE.Vector3(0, 1, 0) },
+  // A shop-drawing elevation is a parallel projection: no perspective, no visible depth.
+  front: { label: 'Ansicht', direction: new THREE.Vector3(0, 0, -1), up: new THREE.Vector3(0, 1, 0), flat: true },
   back: { label: 'Rückseite', direction: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0) },
   top: { label: 'Draufsicht', direction: new THREE.Vector3(0, 1, 0), up: new THREE.Vector3(0, 0, 1) },
   side: { label: 'Seitlich', direction: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 1, 0) },
@@ -40,15 +41,14 @@ export class ModelScene {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    this.camera = new THREE.PerspectiveCamera(38, 1, 0.01, 500);
-    this.camera.position.set(4, 3, -6);
+    this.perspectiveCamera = new THREE.PerspectiveCamera(38, 1, 0.01, 500);
+    this.perspectiveCamera.position.set(4, 3, -6);
+    this.orthographicCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 500);
+    this.camera = this.perspectiveCamera;
+    /** Camera-space extent the flat view was fitted to, kept so resizing can re-fit. */
+    this.orthoFit = null;
 
-    this.controls = new OrbitControls(this.camera, canvas);
-    this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.12;
-    this.controls.screenSpacePanning = true;
-    this.controls.zoomToCursor = true;
-    this.controls.addEventListener('change', () => this.requestRender());
+    this.controls = this.makeControls(this.camera);
 
     this.orientation = new THREE.Group();
     // -X rotation by 90° maps BTLX (x, y, z) to scene (x, z, -y): Z-up becomes Y-up.
@@ -80,6 +80,37 @@ export class ModelScene {
     this.needsRender = true;
   }
 
+  makeControls(camera) {
+    const controls = new OrbitControls(camera, this.canvas);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.12;
+    controls.screenSpacePanning = true;
+    controls.zoomToCursor = true;
+    controls.addEventListener('change', () => this.requestRender());
+    return controls;
+  }
+
+  /**
+   * OrbitControls binds to one camera, so switching projection means rebuilding it.
+   * The orbit target is carried across so the view does not jump.
+   */
+  useCamera(camera, flat) {
+    if (this.camera !== camera) {
+      const target = this.controls.target.clone();
+      this.controls.dispose();
+      this.camera = camera;
+      this.controls = this.makeControls(camera);
+      this.controls.target.copy(target);
+    }
+    // A flat elevation stays flat: pan and zoom only, no orbiting out of the plane.
+    this.controls.enableRotate = !flat;
+  }
+
+  get aspect() {
+    const parent = this.canvas.parentElement;
+    return Math.max(parent.clientWidth, 1) / Math.max(parent.clientHeight, 1);
+  }
+
   buildLighting() {
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.55));
 
@@ -97,8 +128,9 @@ export class ModelScene {
     const width = Math.max(parent.clientWidth, 1);
     const height = Math.max(parent.clientHeight, 1);
     this.renderer.setSize(width, height, false);
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
+    this.perspectiveCamera.aspect = width / height;
+    this.perspectiveCamera.updateProjectionMatrix();
+    this.applyOrthoFrustum(width / height);
     this.requestRender();
   }
 
@@ -260,12 +292,16 @@ export class ModelScene {
   }
 
   /**
-   * Point the camera along the preset direction and dolly it back until the visible
-   * content fits, allowing for both the vertical and the horizontal field of view.
+   * Aim the camera along the preset direction and fit the visible content.
+   *
+   * Flat presets swap to the orthographic camera, so the drawing reads as a true
+   * elevation — parallel edges stay parallel and nothing recedes.
    */
   moveTo(presetKey) {
     if (!this.doc) return;
     const preset = VIEW_PRESETS[presetKey] || VIEW_PRESETS.iso;
+    const flat = Boolean(preset.flat);
+    this.useCamera(flat ? this.orthographicCamera : this.perspectiveCamera, flat);
 
     // Bounding boxes are read from world matrices, so make sure they are current.
     this.scene.updateMatrixWorld(true);
@@ -275,17 +311,78 @@ export class ModelScene {
 
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const radius = Math.max(sphere.radius, 0.25);
+    const camera = this.camera;
 
-    const halfV = THREE.MathUtils.degToRad(this.camera.fov) / 2;
-    const halfH = Math.atan(Math.tan(halfV) * this.camera.aspect);
-    const distance = (radius / Math.max(Math.sin(Math.min(halfV, halfH)), 0.05)) * 1.12;
-
-    this.camera.up.copy(preset.up);
+    camera.up.copy(preset.up);
     this.controls.target.copy(sphere.center);
-    this.camera.position.copy(sphere.center).addScaledVector(preset.direction, distance);
-    this.camera.lookAt(sphere.center);
+
+    if (flat) {
+      // With a parallel projection the distance does not change the size on screen,
+      // only what stays between the near and far planes — so simply stand well clear.
+      const distance = radius * 4;
+      camera.position.copy(sphere.center).addScaledVector(preset.direction, distance);
+      camera.lookAt(sphere.center);
+      camera.near = 0.01;
+      camera.far = distance + radius * 2;
+      camera.zoom = 1;
+      camera.updateMatrixWorld(true);
+      this.orthoFit = this.flatFit(box, camera);
+      this.applyOrthoFrustum(this.aspect);
+    } else {
+      const halfV = THREE.MathUtils.degToRad(camera.fov) / 2;
+      const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
+      const distance = (radius / Math.max(Math.sin(Math.min(halfV, halfH)), 0.05)) * 1.12;
+      camera.position.copy(sphere.center).addScaledVector(preset.direction, distance);
+      camera.lookAt(sphere.center);
+    }
+
     this.controls.update();
     this.requestRender();
+  }
+
+  /**
+   * The content's exact extent in camera space. A bounding sphere would waste most of
+   * the viewport on a flat view, because a wall's diagonal is far longer than its height.
+   */
+  flatFit(box, camera) {
+    const inverse = new THREE.Matrix4().copy(camera.matrixWorld).invert();
+    const corner = new THREE.Vector3();
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (let i = 0; i < 8; i += 1) {
+      corner
+        .set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z)
+        .applyMatrix4(inverse);
+      minX = Math.min(minX, corner.x);
+      maxX = Math.max(maxX, corner.x);
+      minY = Math.min(minY, corner.y);
+      maxY = Math.max(maxY, corner.y);
+    }
+
+    const margin = 1.06;
+    return {
+      centreX: (minX + maxX) / 2,
+      centreY: (minY + maxY) / 2,
+      halfWidth: Math.max(((maxX - minX) / 2) * margin, 0.05),
+      halfHeight: Math.max(((maxY - minY) / 2) * margin, 0.05),
+    };
+  }
+
+  /** Grows the fitted extent to the viewport's aspect so nothing is ever clipped. */
+  applyOrthoFrustum(aspect) {
+    const fit = this.orthoFit;
+    if (!fit) return;
+    const halfHeight = Math.max(fit.halfHeight, fit.halfWidth / aspect);
+    const halfWidth = halfHeight * aspect;
+    const camera = this.orthographicCamera;
+    camera.left = fit.centreX - halfWidth;
+    camera.right = fit.centreX + halfWidth;
+    camera.top = fit.centreY + halfHeight;
+    camera.bottom = fit.centreY - halfHeight;
+    camera.updateProjectionMatrix();
   }
 
   // MARK: - Picking
