@@ -1,0 +1,305 @@
+// Builds and maintains the three.js scene for one BTLX document.
+// Mirrors ModelScene.swift and ModelSceneView.swift.
+//
+// BTLX is millimetre based and Z-up; three.js wants metres and Y-up. Both conversions live
+// on a single orientation group so part meshes keep their original BTLX transform and stay
+// directly comparable with the numbers shown in the inspector.
+
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/OrbitControls.js';
+import { boundsCentre, boundsSize } from './btlx-parser.js';
+import { edgeGeometry, solidGeometry } from './geometry-factory.js';
+import { buildDimensionOverlay, disposeOverlay } from './dimension-overlay.js';
+
+/** Metres per millimetre. */
+const UNIT_SCALE = 0.001;
+
+/** Standard shop-drawing viewpoints. Direction is in scene space (Y up, model centred). */
+export const VIEW_PRESETS = {
+  iso: { label: 'Iso', direction: new THREE.Vector3(-0.75, 0.55, -1).normalize(), up: new THREE.Vector3(0, 1, 0) },
+  front: { label: 'Ansicht', direction: new THREE.Vector3(0, 0, -1), up: new THREE.Vector3(0, 1, 0) },
+  back: { label: 'Rückseite', direction: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0) },
+  top: { label: 'Draufsicht', direction: new THREE.Vector3(0, 1, 0), up: new THREE.Vector3(0, 0, 1) },
+  side: { label: 'Seitlich', direction: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 1, 0) },
+};
+
+export class ModelScene {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.doc = null;
+    this.partMeshes = new Map(); // part id -> Mesh
+    this.edgeMeshes = new Map();
+    this.dimensionGroup = null;
+    this.dimensionKey = null;
+    this.needsRender = true;
+
+    this.scene = new THREE.Scene();
+    this.scene.background = null;
+
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    this.camera = new THREE.PerspectiveCamera(38, 1, 0.01, 500);
+    this.camera.position.set(4, 3, -6);
+
+    this.controls = new OrbitControls(this.camera, canvas);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.12;
+    this.controls.screenSpacePanning = true;
+    this.controls.zoomToCursor = true;
+    this.controls.addEventListener('change', () => this.requestRender());
+
+    this.orientation = new THREE.Group();
+    // -X rotation by 90° maps BTLX (x, y, z) to scene (x, z, -y): Z-up becomes Y-up.
+    this.orientation.rotation.x = -Math.PI / 2;
+    this.orientation.scale.setScalar(UNIT_SCALE);
+    this.centering = new THREE.Group();
+    this.orientation.add(this.centering);
+    this.scene.add(this.orientation);
+
+    this.buildLighting();
+
+    this.raycaster = new THREE.Raycaster();
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(canvas.parentElement || canvas);
+    this.resize();
+
+    const tick = () => {
+      this.frame = requestAnimationFrame(tick);
+      if (this.controls.enableDamping) this.controls.update();
+      if (this.needsRender) {
+        this.needsRender = false;
+        this.renderer.render(this.scene, this.camera);
+      }
+    };
+    tick();
+  }
+
+  requestRender() {
+    this.needsRender = true;
+  }
+
+  buildLighting() {
+    this.scene.add(new THREE.AmbientLight(0xffffff, 1.55));
+
+    const key = new THREE.DirectionalLight(0xffffff, 2.1);
+    key.position.set(-0.6, 1.0, -0.9);
+    this.scene.add(key);
+
+    const fill = new THREE.DirectionalLight(0xffffff, 0.95);
+    fill.position.set(0.8, 0.4, 0.7);
+    this.scene.add(fill);
+  }
+
+  resize() {
+    const parent = this.canvas.parentElement;
+    const width = Math.max(parent.clientWidth, 1);
+    const height = Math.max(parent.clientHeight, 1);
+    this.renderer.setSize(width, height, false);
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+    this.requestRender();
+  }
+
+  // MARK: - Loading
+
+  load(doc) {
+    this.clear();
+    this.doc = doc;
+
+    const centre = boundsCentre(doc.bounds);
+    this.centering.position.set(-centre[0], -centre[1], -centre[2]);
+
+    for (const part of doc.parts) {
+      const basis = new THREE.Matrix4().makeBasis(
+        new THREE.Vector3(...part.xAxis),
+        new THREE.Vector3(...part.yAxis),
+        new THREE.Vector3(...part.zAxis),
+      );
+      basis.setPosition(new THREE.Vector3(...part.origin));
+
+      const geometry = solidGeometry(part.mesh);
+      if (geometry) {
+        const material = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(...this.layerColour(part)),
+          roughness: 0.85,
+          metalness: 0,
+          side: THREE.DoubleSide,
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.matrixAutoUpdate = false;
+        mesh.matrix.copy(basis);
+        mesh.userData.partID = part.id;
+        this.centering.add(mesh);
+        this.partMeshes.set(part.id, mesh);
+
+        const edges = edgeGeometry(part.mesh);
+        if (edges) {
+          const edgeMesh = new THREE.LineSegments(
+            edges,
+            new THREE.LineBasicMaterial({ color: 0x212121, depthWrite: false }),
+          );
+          edgeMesh.matrixAutoUpdate = false;
+          edgeMesh.matrix.copy(basis);
+          edgeMesh.renderOrder = 10;
+          this.centering.add(edgeMesh);
+          this.edgeMeshes.set(part.id, edgeMesh);
+        }
+      }
+    }
+    this.requestRender();
+  }
+
+  clear() {
+    for (const mesh of [...this.partMeshes.values(), ...this.edgeMeshes.values()]) {
+      this.centering.remove(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+    }
+    this.partMeshes.clear();
+    this.edgeMeshes.clear();
+    this.removeDimensions();
+    this.doc = null;
+  }
+
+  layerColour(part) {
+    const layer = this.doc.layers.find((candidate) => candidate.id === part.layerID);
+    if (layer) return layer.colour;
+    if (part.colour) return part.colour.slice(0, 3);
+    return [0.72, 0.72, 0.72];
+  }
+
+  // MARK: - Display
+
+  apply(state) {
+    if (!this.doc) return;
+    const axis = this.doc.normalAxis;
+    const centre = boundsCentre(this.doc.bounds);
+    const size = boundsSize(this.doc.bounds);
+    const spread = Math.max(size[0], size[2]) * 0.35;
+
+    for (const part of this.doc.parts) {
+      const mesh = this.partMeshes.get(part.id);
+      if (!mesh) continue;
+      const isVisible = state.visibleLayers.has(part.layerID);
+      const isSelected = state.selectedPartID === part.id;
+
+      mesh.visible = isVisible || state.ghostHiddenLayers;
+      const edges = this.edgeMeshes.get(part.id);
+      // A ghosted layer keeps its faint solid but drops its edges, so it cannot be
+      // mistaken for a layer that is switched on.
+      if (edges) edges.visible = state.showEdges && isVisible;
+
+      const material = mesh.material;
+      material.emissive.setHex(isSelected ? 0x1a6bd9 : 0x000000);
+      material.emissiveIntensity = isSelected ? 0.55 : 0;
+      material.transparent = !isVisible && !isSelected;
+      material.opacity = isVisible || isSelected ? 1 : 0.12;
+      material.depthWrite = !material.transparent;
+      material.needsUpdate = true;
+
+      // Pull each layer away from the model centre along the build-up normal.
+      const offset = [0, 0, 0];
+      if (state.explode > 0) {
+        const layerCentre = (part.worldBounds.min[axis] + part.worldBounds.max[axis]) / 2;
+        offset[axis] =
+          ((layerCentre - centre[axis]) / Math.max(size[axis], 1)) * spread * state.explode * 2;
+      }
+      const position = new THREE.Vector3(
+        part.origin[0] + offset[0],
+        part.origin[1] + offset[1],
+        part.origin[2] + offset[2],
+      );
+      mesh.matrix.setPosition(position);
+      mesh.matrixWorldNeedsUpdate = true;
+      if (edges) {
+        edges.matrix.setPosition(position);
+        edges.matrixWorldNeedsUpdate = true;
+      }
+    }
+
+    this.updateDimensions(state);
+    this.requestRender();
+  }
+
+  /**
+   * The chains describe the assembled element, so they are rebuilt only when the set of
+   * visible layers changes — not on every selection or slider move.
+   */
+  updateDimensions(state) {
+    if (!state.showDimensions) {
+      if (this.dimensionGroup) this.dimensionGroup.visible = false;
+      return;
+    }
+    const key = [...state.visibleLayers].sort().join(',');
+    if (key !== this.dimensionKey || !this.dimensionGroup) {
+      this.removeDimensions();
+      this.dimensionGroup = buildDimensionOverlay(this.doc, state.visibleLayers);
+      this.centering.add(this.dimensionGroup);
+      this.dimensionKey = key;
+    }
+    this.dimensionGroup.visible = true;
+  }
+
+  removeDimensions() {
+    if (!this.dimensionGroup) return;
+    this.centering.remove(this.dimensionGroup);
+    disposeOverlay(this.dimensionGroup);
+    this.dimensionGroup = null;
+    this.dimensionKey = null;
+  }
+
+  // MARK: - Camera
+
+  /** What the camera should frame: the parts plus the dimension drawing when it is on. */
+  framingObjects() {
+    const objects = [...this.partMeshes.values()].filter((mesh) => mesh.visible);
+    if (this.dimensionGroup && this.dimensionGroup.visible) objects.push(this.dimensionGroup);
+    return objects.length ? objects : [...this.partMeshes.values()];
+  }
+
+  /**
+   * Point the camera along the preset direction and dolly it back until the visible
+   * content fits, allowing for both the vertical and the horizontal field of view.
+   */
+  moveTo(presetKey) {
+    if (!this.doc) return;
+    const preset = VIEW_PRESETS[presetKey] || VIEW_PRESETS.iso;
+
+    // Bounding boxes are read from world matrices, so make sure they are current.
+    this.scene.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    for (const object of this.framingObjects()) box.expandByObject(object);
+    if (box.isEmpty()) return;
+
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const radius = Math.max(sphere.radius, 0.25);
+
+    const halfV = THREE.MathUtils.degToRad(this.camera.fov) / 2;
+    const halfH = Math.atan(Math.tan(halfV) * this.camera.aspect);
+    const distance = (radius / Math.max(Math.sin(Math.min(halfV, halfH)), 0.05)) * 1.12;
+
+    this.camera.up.copy(preset.up);
+    this.controls.target.copy(sphere.center);
+    this.camera.position.copy(sphere.center).addScaledVector(preset.direction, distance);
+    this.camera.lookAt(sphere.center);
+    this.controls.update();
+    this.requestRender();
+  }
+
+  // MARK: - Picking
+
+  /** The part behind a pointer position, or null when the user clicked empty space. */
+  pick(clientX, clientY) {
+    const rect = this.canvas.getBoundingClientRect();
+    const pointer = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(pointer, this.camera);
+    const candidates = [...this.partMeshes.values()].filter((mesh) => mesh.visible);
+    const hits = this.raycaster.intersectObjects(candidates, false);
+    return hits.length ? hits[0].object.userData.partID : null;
+  }
+}

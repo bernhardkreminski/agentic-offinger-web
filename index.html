@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agentic Offinger Web</title>
+<meta name="description" content="3D-Visualisierung von BTLX-Dateien für die Arbeitsvorbereitung im Holzbau.">
+<link rel="stylesheet" href="css/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🪵</text></svg>">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js",
+    "three/addons/OrbitControls.js": "./vendor/OrbitControls.js"
+  }
+}
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button id="toggle-sidebar" class="icon-button" title="Schichten ein-/ausblenden" aria-label="Schichten ein-/ausblenden">☰</button>
+  <h1>Agentic Offinger</h1>
+  <span id="file-name" class="file-name">—</span>
+  <div class="topbar-actions">
+    <button id="import" class="button">BTLX importieren…</button>
+    <button id="load-sample" class="button ghost">Beispiel laden</button>
+    <button id="refit" class="button ghost">Einpassen</button>
+    <button id="toggle-inspector" class="button ghost">Bauteilinfo</button>
+  </div>
+  <input id="file-input" type="file" accept=".btlx,.xml,application/xml,text/xml" hidden>
+</header>
+
+<main class="layout">
+  <aside id="sidebar" class="sidebar">
+    <div class="panel-header">
+      <h2>Schichten</h2>
+      <button id="toggle-all-layers" class="link-button">Alle</button>
+    </div>
+    <div id="layer-list" class="layer-list"></div>
+    <p id="layer-note" class="note"></p>
+    <div id="model-info"></div>
+  </aside>
+
+  <section class="viewport">
+    <canvas id="scene"></canvas>
+
+    <div class="overlay overlay-top">
+      <div id="preset-bar" class="card preset-bar"></div>
+      <div class="card chips">
+        <span class="chips-label">Sichtbar:</span>
+        <span id="visible-chips" class="chips-list"></span>
+      </div>
+    </div>
+
+    <div id="legend" class="card legend"></div>
+
+    <div class="card options">
+      <label class="switch">
+        <span>Kanten</span>
+        <input type="checkbox" id="opt-edges" checked>
+        <span class="track"></span>
+      </label>
+      <label class="switch">
+        <span>Ausgeblendete als Geist</span>
+        <input type="checkbox" id="opt-ghost">
+        <span class="track"></span>
+      </label>
+      <label class="switch">
+        <span>Bemaßung</span>
+        <input type="checkbox" id="opt-dimensions">
+        <span class="track"></span>
+      </label>
+      <div class="slider">
+        <span>Schichten trennen</span>
+        <input type="range" id="opt-explode" min="0" max="1" step="0.01" value="0">
+      </div>
+    </div>
+
+    <div id="empty-state" class="empty-state" hidden>
+      <p class="empty-title">Kein Modell geladen</p>
+      <p class="empty-text">BTLX-Datei importieren, um mit der Arbeitsvorbereitung zu beginnen.</p>
+    </div>
+  </section>
+
+  <aside id="inspector" class="inspector" hidden>
+    <div class="panel-header">
+      <h2>Bauteilinfo</h2>
+      <button id="close-inspector" class="link-button">Schließen</button>
+    </div>
+    <div id="inspector-body"></div>
+  </aside>
+</main>
+
+<div id="error" class="toast" hidden role="alert">
+  <strong>Import fehlgeschlagen</strong>
+  <span id="error-text"></span>
+  <button id="error-dismiss" class="link-button">OK</button>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
