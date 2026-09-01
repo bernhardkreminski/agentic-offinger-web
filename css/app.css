@@ -163,6 +163,13 @@ body {
   min-width: 0;
 }
 
+/* Pin each pane to its track. Auto-placement would put the viewport in the first,
+   zero-width column as soon as the sidebar leaves the flow (it goes position:absolute
+   at the narrow breakpoint), collapsing the canvas to nothing. */
+.sidebar { grid-column: 1; }
+.viewport { grid-column: 2; }
+.inspector { grid-column: 3; }
+
 .sidebar { border-right: 1px solid var(--border); }
 .inspector { border-left: 1px solid var(--border); }
 
