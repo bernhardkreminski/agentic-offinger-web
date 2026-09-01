@@ -14,15 +14,42 @@ import { buildDimensionOverlay, disposeOverlay } from './dimension-overlay.js';
 /** Metres per millimetre. */
 const UNIT_SCALE = 0.001;
 
-/** Standard shop-drawing viewpoints. Direction is in scene space (Y up, model centred). */
+/**
+ * Standard shop-drawing viewpoints, expressed in the element's own frame rather than in
+ * world axes: `offset` weights [horizontal, normal, vertical]. A wall rotated in plan is
+ * therefore still viewed square-on, and for an axis-aligned element these reduce exactly
+ * to the world-axis directions.
+ */
 export const VIEW_PRESETS = {
-  iso: { label: 'Iso', direction: new THREE.Vector3(-0.75, 0.55, -1).normalize(), up: new THREE.Vector3(0, 1, 0) },
+  iso: { label: 'Iso', offset: [-0.75, 1, 0.55] },
   // A shop-drawing elevation is a parallel projection: no perspective, no visible depth.
-  front: { label: 'Ansicht', direction: new THREE.Vector3(0, 0, -1), up: new THREE.Vector3(0, 1, 0), flat: true },
-  back: { label: 'Rückseite', direction: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0) },
-  top: { label: 'Draufsicht', direction: new THREE.Vector3(0, 1, 0), up: new THREE.Vector3(0, 0, 1) },
-  side: { label: 'Seitlich', direction: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 1, 0) },
+  front: { label: 'Ansicht', offset: [0, 1, 0], flat: true },
+  back: { label: 'Rückseite', offset: [0, -1, 0] },
+  top: { label: 'Draufsicht', offset: [0, 0, 1], upAlongNormal: true },
+  side: { label: 'Seitlich', offset: [1, 0, 0] },
 };
+
+/** BTLX is Z-up, three.js is Y-up: (x, y, z) -> (x, z, -y). */
+function toScene(v) {
+  return new THREE.Vector3(v[0], v[2], -v[1]);
+}
+
+/** Camera offset direction and up vector for a preset, in scene space. */
+function presetVectors(preset, frame) {
+  const [h, n, v] = preset.offset;
+  const direction = toScene([
+    frame.horizontal[0] * h + frame.normal[0] * n + frame.vertical[0] * v,
+    frame.horizontal[1] * h + frame.normal[1] * n + frame.vertical[1] * v,
+    frame.horizontal[2] * h + frame.normal[2] * n + frame.vertical[2] * v,
+  ]).normalize();
+
+  // Looking straight down the element, "up" cannot be the vertical any more.
+  const up = preset.upAlongNormal
+    ? toScene(frame.normal).multiplyScalar(-1).normalize()
+    : toScene(frame.vertical).normalize();
+
+  return { direction, up };
+}
 
 export class ModelScene {
   constructor(canvas) {
@@ -206,10 +233,12 @@ export class ModelScene {
 
   apply(state) {
     if (!this.doc) return;
-    const axis = this.doc.normalAxis;
-    const centre = boundsCentre(this.doc.bounds);
+    const frame = this.doc.frame;
+    const range = this.doc.frameBounds.n;
+    const centreN = (range[0] + range[1]) / 2;
+    const thickness = Math.max(range[1] - range[0], 1);
     const size = boundsSize(this.doc.bounds);
-    const spread = Math.max(size[0], size[2]) * 0.35;
+    const spread = Math.max(size[0], size[1], size[2]) * 0.35;
 
     for (const part of this.doc.parts) {
       const mesh = this.partMeshes.get(part.id);
@@ -231,12 +260,14 @@ export class ModelScene {
       material.depthWrite = !material.transparent;
       material.needsUpdate = true;
 
-      // Pull each layer away from the model centre along the build-up normal.
+      // Pull each layer away from the element's middle along the build-up normal.
       const offset = [0, 0, 0];
       if (state.explode > 0) {
-        const layerCentre = (part.worldBounds.min[axis] + part.worldBounds.max[axis]) / 2;
-        offset[axis] =
-          ((layerCentre - centre[axis]) / Math.max(size[axis], 1)) * spread * state.explode * 2;
+        const partCentreN = (part.frameSpan.n[0] + part.frameSpan.n[1]) / 2;
+        const shift = ((partCentreN - centreN) / thickness) * spread * state.explode * 2;
+        offset[0] = frame.normal[0] * shift;
+        offset[1] = frame.normal[1] * shift;
+        offset[2] = frame.normal[2] * shift;
       }
       const position = new THREE.Vector3(
         part.origin[0] + offset[0],
@@ -300,6 +331,7 @@ export class ModelScene {
   moveTo(presetKey) {
     if (!this.doc) return;
     const preset = VIEW_PRESETS[presetKey] || VIEW_PRESETS.iso;
+    const { direction, up } = presetVectors(preset, this.doc.frame);
     const flat = Boolean(preset.flat);
     this.useCamera(flat ? this.orthographicCamera : this.perspectiveCamera, flat);
 
@@ -313,14 +345,14 @@ export class ModelScene {
     const radius = Math.max(sphere.radius, 0.25);
     const camera = this.camera;
 
-    camera.up.copy(preset.up);
+    camera.up.copy(up);
     this.controls.target.copy(sphere.center);
 
     if (flat) {
       // With a parallel projection the distance does not change the size on screen,
       // only what stays between the near and far planes — so simply stand well clear.
       const distance = radius * 4;
-      camera.position.copy(sphere.center).addScaledVector(preset.direction, distance);
+      camera.position.copy(sphere.center).addScaledVector(direction, distance);
       camera.lookAt(sphere.center);
       camera.near = 0.01;
       camera.far = distance + radius * 2;
@@ -332,7 +364,7 @@ export class ModelScene {
       const halfV = THREE.MathUtils.degToRad(camera.fov) / 2;
       const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
       const distance = (radius / Math.max(Math.sin(Math.min(halfV, halfH)), 0.05)) * 1.12;
-      camera.position.copy(sphere.center).addScaledVector(preset.direction, distance);
+      camera.position.copy(sphere.center).addScaledVector(direction, distance);
       camera.lookAt(sphere.center);
     }
 

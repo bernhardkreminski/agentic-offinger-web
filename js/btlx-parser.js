@@ -5,6 +5,7 @@
 
 import { add, cross, normalize, scale, sub, length as vecLength, dot } from './vec3.js';
 import { classifyLayers } from './layer-classifier.js';
+import { deriveElementFrame, frameExtentsOf } from './element-frame.js';
 
 export class BTLxParseError extends Error {}
 
@@ -148,12 +149,14 @@ function readPart(partElement, id) {
   };
 
   const bounds = emptyBounds();
-  for (const p of mesh.points) {
-    expandBounds(
-      bounds,
-      add(add(origin, scale(xAxis, p[0])), add(scale(yAxis, p[1]), scale(zAxis, p[2]))),
-    );
-  }
+  const worldPoints = new Float64Array(mesh.points.length * 3);
+  mesh.points.forEach((p, index) => {
+    const world = add(add(origin, scale(xAxis, p[0])), add(scale(yAxis, p[1]), scale(zAxis, p[2])));
+    expandBounds(bounds, world);
+    worldPoints[index * 3] = world[0];
+    worldPoints[index * 3 + 1] = world[1];
+    worldPoints[index * 3 + 2] = world[2];
+  });
 
   const colourElement = kid(partElement, 'Colour');
   let colour = null;
@@ -197,6 +200,9 @@ function readPart(partElement, id) {
     mesh,
     processings: readProcessings(partElement),
     worldBounds: bounds,
+    worldPoints,
+    /** [min, max] along the element normal / horizontal / vertical. Filled in below. */
+    frameSpan: null,
     layerID: '',
   };
 }
@@ -233,7 +239,21 @@ export function parseBTLx(text, fileName) {
   const project = root.getElementsByTagNameNS('*', 'Project')[0] || null;
   const exportInfo = root.getElementsByTagNameNS('*', 'InitialExportProgram')[0] || null;
 
-  const { layers, normalAxis } = classifyLayers(parts, bounds);
+  const frame = deriveElementFrame(parts);
+  for (const part of parts) part.frameSpan = frameExtentsOf(part, frame);
+  // The world points were only needed to measure the frame; drop them again.
+  for (const part of parts) part.worldPoints = null;
+
+  const layers = classifyLayers(parts, frame);
+
+  // Overall extent in the element's own frame: length, height and build-up depth.
+  const frameBounds = { h: [Infinity, -Infinity], v: [Infinity, -Infinity], n: [Infinity, -Infinity] };
+  for (const part of parts) {
+    for (const key of ['h', 'v', 'n']) {
+      frameBounds[key][0] = Math.min(frameBounds[key][0], part.frameSpan[key][0]);
+      frameBounds[key][1] = Math.max(frameBounds[key][1], part.frameSpan[key][1]);
+    }
+  }
 
   return {
     fileName,
@@ -254,7 +274,8 @@ export function parseBTLx(text, fileName) {
     },
     parts,
     layers,
-    normalAxis,
+    frame,
+    frameBounds,
     bounds,
     get totalWeight() {
       return this.parts.reduce((sum, part) => sum + part.weight * part.count, 0);
@@ -262,4 +283,3 @@ export function parseBTLx(text, fileName) {
   };
 }
 
-export const AXIS_NAMES = ['X', 'Y', 'Z'];

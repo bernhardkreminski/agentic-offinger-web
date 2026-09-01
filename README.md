@@ -12,12 +12,16 @@ Funktionsgleich mit der iPad-App:
 - **BTLX-Import** — über den Dateidialog oder per Drag & Drop. Die mitgelieferte
   `data/testfile.btlx` wird beim Laden der Seite automatisch geöffnet.
 - **3D-Ansicht** — Orbit/Pan/Zoom, Standardansichten (Iso, Ansicht, Rückseite,
-  Draufsicht, Seitlich), Kantendarstellung, Einpassen.
+  Draufsicht, Seitlich), Kantendarstellung, Einpassen. Die Standardansichten beziehen sich
+  auf das Achsensystem des Elements, nicht auf die Weltachsen.
 - **Ansicht als echte 2D-Ansicht** — die Ansicht wird in Parallelprojektion gezeichnet
   (orthografische Kamera): keine Perspektive, keine sichtbare Tiefe, parallele Kanten
   bleiben parallel. Sie lässt sich verschieben und zoomen, aber nicht aus der Ebene
   herausdrehen. Alle übrigen Ansichten bleiben perspektivisch.
-- **Schichten** — aus der Bauteillage entlang der Elementnormale abgeleitet:
+- **Schichten** — aus der Bauteillage entlang der Elementnormale abgeleitet. Die
+  Elementnormale stammt aus dem *eigenen* Achsensystem des Elements, das aus den
+  Bauteilachsen bestimmt wird — ein im Grundriss gedrehtes Element wird daher genauso
+  korrekt gelesen wie ein achsparalleles. Codes:
   `RW` (Rahmenwerk), `BS1…` (Beplankung Seite 1 …), `IS1…` (Innenseite …).
   Mehrere Schichten gleichzeitig sichtbar, einzeln isolierbar, ausgeblendete Schichten
   optional als Geist, Schichten stufenlos auseinanderziehbar.

@@ -7,7 +7,7 @@
 // position number, designation and visible face size.
 
 import * as THREE from 'three';
-import { boundsCentre, boundsSize, emptyBounds, unionBounds } from './btlx-parser.js';
+import { framePoint } from './element-frame.js';
 import { listLabel, mm } from './format.js';
 
 // Colours follow the reference drawing: dimensioning in graphite, part labels in cyan.
@@ -122,16 +122,12 @@ function textMesh({ text, size, colour, weight = '500', position, plane, rotated
 
 /**
  * The drawing plane, plus the basis that makes text read correctly when the element is
- * seen from its outer face.
+ * seen from its outer face. Everything is expressed in the element's own frame, so a wall
+ * rotated in plan gets its dimensions laid onto the wall rather than onto a world plane.
  */
-function makePlane(hAxis, vAxis, normalAxis, coordinate) {
-  const unit = (axis) => {
-    const v = new THREE.Vector3();
-    v.setComponent(axis, 1);
-    return v;
-  };
-  const n = unit(normalAxis);
-  const up = unit(vAxis);
+function makePlane(frame, coordinate) {
+  const n = new THREE.Vector3(...frame.normal);
+  const up = new THREE.Vector3(...frame.vertical);
   // Viewed from the outer face, this is the direction text runs.
   const right = new THREE.Vector3().crossVectors(up, n);
   const orientation = new THREE.Quaternion().setFromRotationMatrix(
@@ -139,17 +135,10 @@ function makePlane(hAxis, vAxis, normalAxis, coordinate) {
   );
 
   return {
-    hAxis,
-    vAxis,
-    normalAxis,
-    coordinate,
     orientation,
+    coordinate,
     point(h, v, depth = coordinate) {
-      const p = [0, 0, 0];
-      p[hAxis] = h;
-      p[vAxis] = v;
-      p[normalAxis] = depth;
-      return p;
+      return framePoint(frame, h, v, depth);
     },
   };
 }
@@ -159,7 +148,7 @@ function makePlane(hAxis, vAxis, normalAxis, coordinate) {
 function stationsOf(parts, axis) {
   const values = [];
   for (const part of parts) {
-    values.push(part.worldBounds.min[axis], part.worldBounds.max[axis]);
+    values.push(part.frameSpan[axis][0], part.frameSpan[axis][1]);
   }
   values.sort((a, b) => a - b);
   const merged = [];
@@ -230,22 +219,22 @@ function addOverall({ start, end, offset, tick, fontSize, horizontal, plane, gro
 
 // MARK: - Part labels
 
-function addLabel({ part, hAxis, vAxis, normalAxis, lift, fontSize, plane, group }) {
-  const width = part.worldBounds.max[hAxis] - part.worldBounds.min[hAxis];
-  const height = part.worldBounds.max[vAxis] - part.worldBounds.min[vAxis];
+function addLabel({ part, lift, fontSize, plane, group }) {
+  const span = part.frameSpan;
+  const width = span.h[1] - span.h[0];
+  const height = span.v[1] - span.v[0];
   if (Math.min(width, height) <= 1) return;
 
   // Narrow members carry their label turned along their length, as on the drawing; the
   // caption keeps its size and is allowed to overhang a slender stud rather than shrinking
   // to something unreadable.
-  const centre = (axis) => (part.worldBounds.min[axis] + part.worldBounds.max[axis]) / 2;
   group.add(
     textMesh({
       text: `${listLabel(part)}\n${mm(width)} × ${mm(height)} mm`,
       size: fontSize * 0.8,
       colour: LABEL_COLOUR,
       weight: '600',
-      position: plane.point(centre(hAxis), centre(vAxis), part.worldBounds.max[normalAxis] + lift),
+      position: plane.point((span.h[0] + span.h[1]) / 2, (span.v[0] + span.v[1]) / 2, span.n[1] + lift),
       plane,
       rotated: height > width,
       occludable: true,
@@ -262,22 +251,25 @@ export function buildDimensionOverlay(doc, visibleLayers) {
   const parts = doc.parts.filter((part) => visibleLayers.has(part.layerID));
   if (!parts.length) return group;
 
-  const bounds = emptyBounds();
-  for (const part of parts) unionBounds(bounds, part.worldBounds);
-  const size = boundsSize(bounds);
+  // Extent of the visible parts in the element's own frame.
+  const bounds = { h: [Infinity, -Infinity], v: [Infinity, -Infinity], n: [Infinity, -Infinity] };
+  for (const part of parts) {
+    for (const key of ['h', 'v', 'n']) {
+      bounds[key][0] = Math.min(bounds[key][0], part.frameSpan[key][0]);
+      bounds[key][1] = Math.max(bounds[key][1], part.frameSpan[key][1]);
+    }
+  }
 
-  // Drawing plane: spanned by the two in-plane axes, offset off the outer face.
-  const normal = doc.normalAxis;
-  const inPlane = [0, 1, 2].filter((axis) => axis !== normal);
-  const hAxis = size[inPlane[0]] >= size[inPlane[1]] ? inPlane[0] : inPlane[1];
-  const vAxis = inPlane[0] === hAxis ? inPlane[1] : inPlane[0];
+  const width = bounds.h[1] - bounds.h[0];
+  const height = bounds.v[1] - bounds.v[0];
+  const span = Math.max(width, height, 1);
 
-  const span = Math.max(size[hAxis], size[vAxis], 1);
-  const plane = makePlane(hAxis, vAxis, normal, bounds.max[normal] + span * 0.012);
+  // Drawing plane: the element's own plane, offset just off its outer face.
+  const plane = makePlane(doc.frame, bounds.n[1] + span * 0.012);
 
   const fontSize = span / 48;
-  const chainGap = span * 0.055; // model edge -> part chain
-  const overallGap = span * 0.125; // model edge -> overall dimension
+  const chainGap = span * 0.055; // element edge -> part chain
+  const overallGap = span * 0.125; // element edge -> overall dimension
   const tick = fontSize * 0.55;
 
   const lines = new LineBuilder();
@@ -285,35 +277,35 @@ export function buildDimensionOverlay(doc, visibleLayers) {
 
   // Horizontal chain, above the element.
   addChain({
-    stations: stationsOf(parts, hAxis),
-    edge: bounds.max[vAxis],
+    stations: stationsOf(parts, 'h'),
+    edge: bounds.v[1],
     gap: chainGap,
     tick, fontSize, horizontal: true, plane, group, lines, dashes,
   });
 
   // Vertical chain, to the leading side of the element.
   addChain({
-    stations: stationsOf(parts, vAxis),
-    edge: bounds.min[hAxis],
+    stations: stationsOf(parts, 'v'),
+    edge: bounds.h[0],
     gap: -chainGap,
     tick, fontSize, horizontal: false, plane, group, lines, dashes,
   });
 
   // Overall dimensions outside both chains.
   addOverall({
-    start: bounds.min[hAxis], end: bounds.max[hAxis],
-    offset: bounds.max[vAxis] + overallGap,
+    start: bounds.h[0], end: bounds.h[1],
+    offset: bounds.v[1] + overallGap,
     tick, fontSize, horizontal: true, plane, group, lines,
   });
   addOverall({
-    start: bounds.min[vAxis], end: bounds.max[vAxis],
-    offset: bounds.min[hAxis] - overallGap,
+    start: bounds.v[0], end: bounds.v[1],
+    offset: bounds.h[0] - overallGap,
     tick, fontSize, horizontal: false, plane, group, lines,
   });
 
   // One label per visible part.
   for (const part of parts) {
-    addLabel({ part, hAxis, vAxis, normalAxis: normal, lift: span * 0.003, fontSize, plane, group });
+    addLabel({ part, lift: span * 0.003, fontSize, plane, group });
   }
 
   const solidLines = lines.build(LINE_COLOUR);

@@ -1,13 +1,13 @@
 // Derives build-up layers (Schichtaufbau) from part geometry.
-// Mirrors LayerClassifier.swift.
 //
-// BTLX has no layer attribute, so layers are reconstructed the way a timber-frame element
-// is actually built: parts are projected onto the element normal — the thinnest of the
-// three world axes — and grouped into bands of overlapping extent.
+// BTLX has no layer attribute describing the build-up, so layers are reconstructed the way
+// a timber element is actually built: parts are projected onto the element normal and
+// grouped into bands of overlapping extent. The normal comes from the element's own frame,
+// not from a world axis, so a wall rotated in plan is read correctly.
 //
-// The band holding the structural framing (the thickest band) becomes RW (Rahmenwerk).
-// Bands stacked outwards from it become BS1, BS2 … (Beplankung Seite 1 …), bands on the
-// opposite face IS1, IS2 … (Innenseite …).
+// The band holding the structural framing becomes RW (Rahmenwerk). Bands stacked outwards
+// from it become BS1, BS2 … (Beplankung Seite 1 …), bands on the opposite face
+// IS1, IS2 … (Innenseite …).
 
 /** Two bands are merged when they overlap by more than this, in millimetres. */
 const OVERLAP_TOLERANCE = 1.0;
@@ -18,23 +18,24 @@ const SHEATHING_COLOURS = [
   [0.55, 0.72, 0.52],
   [0.8, 0.55, 0.55],
   [0.66, 0.58, 0.78],
+  [0.85, 0.72, 0.4],
+  [0.5, 0.74, 0.74],
 ];
 
-/** The element normal is the world axis the model is thinnest along. */
-function normalAxisOf(bounds) {
-  const size = [0, 1, 2].map((i) => bounds.max[i] - bounds.min[i]);
-  let axis = 0;
-  for (let i = 1; i < 3; i += 1) if (size[i] < size[axis]) axis = i;
-  return axis;
-}
+/**
+ * Designations that mark a load-bearing member. Thickness alone is not enough to find the
+ * framing: a ventilated facade's battens and cladding can span a deeper band than the studs
+ * they are fixed to, so the structural members themselves have to be recognised.
+ */
+const FRAMING_PATTERN =
+  /st(ä|ae|a)nder|stiel|st(ü|ue)tze|pfosten|r(ä|ae)hm|schwelle|riegel|sturz|br(ü|ue)stung|unterzug|(ü|ue)berzug|balken|tr(ä|ae)ger|pfette|sparren|fusspfette|rippe/i;
 
 /** Sweep the parts along the normal and merge those whose extents overlap. */
-function bandsFor(parts, axis) {
-  const sorted = [...parts].sort((a, b) => a.worldBounds.min[axis] - b.worldBounds.min[axis]);
+function bandsFor(parts) {
+  const sorted = [...parts].sort((a, b) => a.frameSpan.n[0] - b.frameSpan.n[0]);
   const bands = [];
   for (const part of sorted) {
-    const lower = part.worldBounds.min[axis];
-    const upper = part.worldBounds.max[axis];
+    const [lower, upper] = part.frameSpan.n;
     const last = bands[bands.length - 1];
     if (last && lower < last.upper - OVERLAP_TOLERANCE) {
       last.upper = Math.max(last.upper, upper);
@@ -47,37 +48,44 @@ function bandsFor(parts, axis) {
 }
 
 /**
- * The framing band is the thickest one — sheathing and insulation are always thinner
- * than the studs they are fixed to. Ties break on total weight.
+ * The framing band is the one that actually carries the element: first by how many
+ * load-bearing members it contains, then by weight, and only as a last resort by thickness.
  */
 function frameBandIndex(bands, parts) {
-  const weights = new Map(parts.map((part) => [part.id, part.weight]));
+  const byID = new Map(parts.map((part) => [part.id, part]));
+
+  // Ranked lexicographically: structural members first, then weight, then thickness.
+  const outranks = (a, b) => {
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] > b[i] + 1e-9) return true;
+      if (a[i] < b[i] - 1e-9) return false;
+    }
+    return false;
+  };
+
   let best = 0;
-  let bestThickness = -Infinity;
-  let bestWeight = -Infinity;
+  let bestScore = null;
+
   bands.forEach((band, index) => {
-    const thickness = band.upper - band.lower;
-    const weight = band.partIDs.reduce((sum, id) => sum + (weights.get(id) || 0), 0);
-    if (
-      thickness > bestThickness + 0.5 ||
-      (Math.abs(thickness - bestThickness) <= 0.5 && weight > bestWeight)
-    ) {
+    const members = band.partIDs.map((id) => byID.get(id)).filter(Boolean);
+    const score = [
+      members.filter((part) => FRAMING_PATTERN.test(part.designation)).length,
+      members.reduce((sum, part) => sum + part.weight * part.count, 0),
+      band.upper - band.lower,
+    ];
+    if (!bestScore || outranks(score, bestScore)) {
       best = index;
-      bestThickness = thickness;
-      bestWeight = weight;
+      bestScore = score;
     }
   });
   return best;
 }
 
-export function classifyLayers(parts, bounds) {
-  if (parts.length === 0 || bounds.min[0] > bounds.max[0]) {
-    return { layers: [], normalAxis: 1 };
-  }
+export function classifyLayers(parts, frame) {
+  if (!parts.length) return [];
 
-  const normalAxis = normalAxisOf(bounds);
-  const bands = bandsFor(parts, normalAxis);
-  if (bands.length === 0) return { layers: [], normalAxis };
+  const bands = bandsFor(parts);
+  if (!bands.length) return [];
 
   const frameIndex = frameBandIndex(bands, parts);
 
@@ -112,7 +120,7 @@ export function classifyLayers(parts, bounds) {
   }
   for (const part of parts) part.layerID = byPart.get(part.id) || '';
 
-  return { layers, normalAxis };
+  return layers;
 }
 
 export function layerSummary(layer, doc) {

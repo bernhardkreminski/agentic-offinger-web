@@ -1,7 +1,7 @@
 // Renders the sidebar, the inspector and the viewport overlays from the parsed document.
 // Mirrors LayerSidebar.swift and PartInspector.swift.
 
-import { AXIS_NAMES, toWorld } from './btlx-parser.js';
+import { toWorld } from './btlx-parser.js';
 import { layerSummary } from './layer-classifier.js';
 import { processingDisplayName } from './btlx-parser.js';
 import { crossSection, kg, listLabel, mm, point } from './format.js';
@@ -12,6 +12,13 @@ const el = (tag, className, text) => {
   if (text !== undefined) node.textContent = text;
   return node;
 };
+
+/** Length x build-up depth x height, measured in the element's own frame. */
+const elementSize = (doc) => ({
+  length: doc.frameBounds.h[1] - doc.frameBounds.h[0],
+  depth: doc.frameBounds.n[1] - doc.frameBounds.n[0],
+  height: doc.frameBounds.v[1] - doc.frameBounds.v[0],
+});
 
 const cssColour = (rgb) =>
   `rgb(${Math.round(rgb[0] * 255)} ${Math.round(rgb[1] * 255)} ${Math.round(rgb[2] * 255)})`;
@@ -116,11 +123,7 @@ export function renderModelInfo(container, doc) {
   container.textContent = '';
   if (!doc) return;
 
-  const size = [
-    doc.bounds.max[0] - doc.bounds.min[0],
-    doc.bounds.max[1] - doc.bounds.min[1],
-    doc.bounds.max[2] - doc.bounds.min[2],
-  ];
+  const size = elementSize(doc);
 
   container.append(
     section(
@@ -131,7 +134,9 @@ export function renderModelInfo(container, doc) {
         ['BTLX-Version', doc.version],
         ['Bauteile', String(doc.parts.length)],
         ['Gesamtgewicht', kg(doc.totalWeight)],
-        ['Abmessung', `${mm(size[0])} × ${mm(size[1])} × ${mm(size[2])} mm`],
+        ['Länge', `${mm(size.length)} mm`],
+        ['Höhe', `${mm(size.height)} mm`],
+        ['Aufbaudicke', `${mm(size.depth)} mm`],
       ]),
     ),
   );
@@ -149,9 +154,8 @@ export function renderModelInfo(container, doc) {
 
 export function layerNote(doc) {
   if (!doc) return '';
-  return `Schichten sind aus der Bauteillage entlang der Elementnormale (Achse ${
-    AXIS_NAMES[doc.normalAxis]
-  }) abgeleitet. Mehrere Schichten können gleichzeitig sichtbar sein.`;
+  const thickness = doc.frameBounds.n[1] - doc.frameBounds.n[0];
+  return `Schichten sind aus der Bauteillage entlang der Elementnormale (${doc.frame.description}, Aufbau ${mm(thickness)} mm) abgeleitet. Mehrere Schichten können gleichzeitig sichtbar sein.`;
 }
 
 // MARK: - Viewport overlays
@@ -180,14 +184,10 @@ export function renderLegend(container, doc) {
     return;
   }
   container.hidden = false;
-  const size = [
-    doc.bounds.max[0] - doc.bounds.min[0],
-    doc.bounds.max[1] - doc.bounds.min[1],
-    doc.bounds.max[2] - doc.bounds.min[2],
-  ];
+  const size = elementSize(doc);
   container.append(
     el('div', 'legend-title', doc.projectName || doc.fileName),
-    el('div', 'legend-line', `${mm(size[0])} × ${mm(size[1])} × ${mm(size[2])} mm`),
+    el('div', 'legend-line', `${mm(size.length)} × ${mm(size.depth)} × ${mm(size.height)} mm`),
     el(
       'div',
       'legend-line',
