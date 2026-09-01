@@ -155,7 +155,11 @@ export function renderModelInfo(container, doc) {
 export function layerNote(doc) {
   if (!doc) return '';
   const thickness = doc.frameBounds.n[1] - doc.frameBounds.n[0];
-  return `Schichten sind aus der Bauteillage entlang der Elementnormale (${doc.frame.description}, Aufbau ${mm(thickness)} mm) abgeleitet. Mehrere Schichten können gleichzeitig sichtbar sein.`;
+  const origin =
+    doc.layers.source === 'declared'
+      ? 'Schichten stammen aus dem Schichtaufbau der Datei.'
+      : 'Schichten sind aus der Bauteillage entlang der Elementnormale abgeleitet.';
+  return `${origin} Achsen aus der Langseite des Riegelwerks (${doc.frame.description}, Aufbau ${mm(thickness)} mm). Mehrere Schichten können gleichzeitig sichtbar sein.`;
 }
 
 // MARK: - Viewport overlays

@@ -4,8 +4,8 @@
 // local element names only, so files written with any prefix — or none — parse identically.
 
 import { add, cross, normalize, scale, sub, length as vecLength, dot } from './vec3.js';
-import { classifyLayers } from './layer-classifier.js';
-import { deriveElementFrame, frameExtentsOf } from './element-frame.js';
+import { classifyLayers, measureLayers } from './layer-classifier.js';
+import { alignToFraming, deriveElementFrame, frameExtentsOf } from './element-frame.js';
 
 export class BTLxParseError extends Error {}
 
@@ -184,6 +184,11 @@ function readPart(partElement, id) {
     orderNumber: attr(partElement, 'OrderNumber'),
     storey: attr(partElement, 'Storey'),
     count: Number.parseInt(attr(partElement, 'Count') || '1', 10) || 1,
+    /** Build-up layer number, matching a <Layer> under <Composites>. */
+    layerNumber: partElement.hasAttribute('Layer')
+      ? Number.parseInt(attr(partElement, 'Layer'), 10)
+      : null,
+    group: attr(partElement, 'Group'),
     guid: attr(transformation, 'GUID').replace(/[{}]/g, ''),
     length: num(attr(partElement, 'Length')),
     width: num(attr(partElement, 'Width')),
@@ -236,15 +241,40 @@ export function parseBTLx(text, fileName) {
   const bounds = emptyBounds();
   for (const part of parts) unionBounds(bounds, part.worldBounds);
 
+  // The element's own build-up, when the exporter states it.
+  const declaredLayers = Array.from(root.getElementsByTagNameNS('*', 'Composites'))
+    .flatMap((composites) => Array.from(composites.getElementsByTagNameNS('*', 'Layers')))
+    .flatMap((container) => kids(container, 'Layer'))
+    .map((layer) => ({
+      number: Number.parseInt(attr(layer, 'Layer'), 10),
+      designation: attr(layer, 'Designation'),
+      material: attr(layer, 'Material'),
+      height: num(attr(layer, 'Height')),
+    }))
+    .filter((layer) => Number.isFinite(layer.number));
+
   const project = root.getElementsByTagNameNS('*', 'Project')[0] || null;
   const exportInfo = root.getElementsByTagNameNS('*', 'InitialExportProgram')[0] || null;
 
-  const frame = deriveElementFrame(parts);
+  // Bootstrap a frame from the part orientations, so the geometric fallback has an axis
+  // to work along even before the layers are known.
+  let frame = deriveElementFrame(parts);
   for (const part of parts) part.frameSpan = frameExtentsOf(part, frame);
+
+  const layers = classifyLayers(parts, declaredLayers);
+
+  // Then set the element out from the long side of its Riegelwerk, as a drawing would be.
+  const framing = layers.find((layer) => layer.id === 'RW');
+  if (framing) {
+    const framingIDs = new Set(framing.partIDs);
+    const framingParts = parts.filter((part) => framingIDs.has(part.id));
+    frame = alignToFraming(framingParts, frame, parts);
+    for (const part of parts) part.frameSpan = frameExtentsOf(part, frame);
+  }
+  measureLayers(layers, parts);
+
   // The world points were only needed to measure the frame; drop them again.
   for (const part of parts) part.worldPoints = null;
-
-  const layers = classifyLayers(parts, frame);
 
   // Overall extent in the element's own frame: length, height and build-up depth.
   const frameBounds = { h: [Infinity, -Infinity], v: [Infinity, -Infinity], n: [Infinity, -Infinity] };

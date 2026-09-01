@@ -13,16 +13,19 @@ Funktionsgleich mit der iPad-App:
   `data/testfile.btlx` wird beim Laden der Seite automatisch geöffnet.
 - **3D-Ansicht** — Orbit/Pan/Zoom, Standardansichten (Iso, Ansicht, Rückseite,
   Draufsicht, Seitlich), Kantendarstellung, Einpassen. Die Standardansichten beziehen sich
-  auf das Achsensystem des Elements, nicht auf die Weltachsen.
+  auf das Achsensystem des Elements, nicht auf die Weltachsen: die Längsachse wird an der
+  Langseite des Riegelwerks ausgerichtet, sodass auch eine im Grundriss gedrehte Wand
+  senkrecht angesehen und bemaßt wird.
 - **Ansicht als echte 2D-Ansicht** — die Ansicht wird in Parallelprojektion gezeichnet
   (orthografische Kamera): keine Perspektive, keine sichtbare Tiefe, parallele Kanten
   bleiben parallel. Sie lässt sich verschieben und zoomen, aber nicht aus der Ebene
   herausdrehen. Alle übrigen Ansichten bleiben perspektivisch.
-- **Schichten** — aus der Bauteillage entlang der Elementnormale abgeleitet. Die
-  Elementnormale stammt aus dem *eigenen* Achsensystem des Elements, das aus den
-  Bauteilachsen bestimmt wird — ein im Grundriss gedrehtes Element wird daher genauso
-  korrekt gelesen wie ein achsparalleles. Codes:
-  `RW` (Rahmenwerk), `BS1…` (Beplankung Seite 1 …), `IS1…` (Innenseite …).
+- **Schichten** — vorrangig aus dem Schichtaufbau der Datei: cadwork exportiert unter
+  `<Composites><Layers>` eine `<Layer>`-Definition je Schicht, und jedes `<Part>` trägt die
+  passende Schichtnummer. Codes nach cadwork-Benennung: `RW` Riegelwerk/Tragschicht
+  (Nummer 0), `BS n` Bundseitenschichten (positiv), `GS n` Gegenseitenschichten (negativ);
+  Bauteile ohne Schichtzuordnung sammelt `NZ`. Dateien ohne diesen Block (reine Teilelisten)
+  fallen auf die geometrische Ableitung entlang der Elementnormale zurück.
   Mehrere Schichten gleichzeitig sichtbar, einzeln isolierbar, ausgeblendete Schichten
   optional als Geist, Schichten stufenlos auseinanderziehbar.
 - **Bemaßung** — Maßketten mit einem Teilstrich an jeder Bauteilkante, Gesamtmaße und

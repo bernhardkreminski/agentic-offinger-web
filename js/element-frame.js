@@ -11,7 +11,7 @@
 // The candidate directions come from the parts themselves: whatever a wall is rotated by,
 // its studs and panels are still built on its own axes.
 
-import { cross, dot, normalize, scale, sub } from './vec3.js';
+import { cross, dot, length as vecLength, normalize, scale, sub } from './vec3.js';
 
 /** Two directions this aligned are treated as one candidate. */
 const PARALLEL = 0.9999;
@@ -169,4 +169,47 @@ export function framePoint(frame, h, v, n) {
     frame.horizontal[1] * h + frame.vertical[1] * v + frame.normal[1] * n,
     frame.horizontal[2] * h + frame.vertical[2] * v + frame.normal[2] * n,
   ];
+}
+
+/**
+ * Re-aligns the frame so its horizontal follows the longest member of the load-bearing
+ * layer — the wall's own long side, which is what the element is set out from. The
+ * candidate search above only bootstraps the frame; this pins it to the Riegelwerk.
+ */
+export function alignToFraming(framingParts, frame, allParts) {
+  let longest = null;
+  let longestExtent = 0;
+  for (const part of framingParts) {
+    for (const axis of [part.xAxis, part.yAxis, part.zAxis]) {
+      const extent = extentAlong([part], axis);
+      if (extent > longestExtent) {
+        longestExtent = extent;
+        longest = axis;
+      }
+    }
+  }
+  if (!longest) return frame;
+
+  const along = normalize(longest);
+  const worldUp = [0, 0, 1];
+  let vertical = sub(worldUp, scale(along, dot(along, worldUp)));
+  vertical = vecLength(vertical) < 1e-6 ? frame.vertical : normalize(vertical);
+
+  // Canonicalising the normal makes the result independent of which way round the
+  // member happens to be modelled.
+  const normal = canonical(normalize(cross(vertical, along)));
+  const horizontal = normalize(cross(normal, vertical));
+  const axisIndex = isWorldAxis(normal);
+
+  return {
+    normal,
+    vertical,
+    horizontal,
+    thickness: extentAlong(allParts, normal),
+    axisAligned: axisIndex >= 0,
+    description:
+      axisIndex >= 0
+        ? `Achse ${'XYZ'[axisIndex]}`
+        : `Normale ${normal.map((n) => n.toFixed(3)).join(' / ')}`,
+  };
 }
